@@ -2084,42 +2084,6 @@ OnLoaded:
 #End Region
 
     ''' <summary>
-    ''' 发送 Minecraft 更新提示。
-    ''' </summary>
-    Public Sub McDownloadClientUpdateHint(VersionName As String, Json As JObject)
-        Try
-
-            '获取对应版本
-            Dim Version As JToken = Nothing
-            For Each Token In Json("versions")
-                If Token("id") IsNot Nothing AndAlso Token("id").ToString = VersionName Then
-                    Version = Token
-                    Exit For
-                End If
-            Next
-            '进行提示
-            If Version Is Nothing Then Return
-            Dim Time As Date = Version("releaseTime")
-            Dim MsgBoxText As String = $"新版本：{VersionName}{vbCrLf}" &
-                If((Date.Now - Time).TotalDays > 1, "更新时间：" & Time.ToString, "更新于：" & StringUtils.FormatTimeSpan(Time - Date.Now, False))
-            Dim MsgResult = MyMsgBox(MsgBoxText, "Minecraft 更新提示", "确定", "下载", If((Date.Now - Time).TotalHours > 3, "更新日志", ""),
-                Button3Action:=Sub() McUpdateLogShow(Version))
-            '弹窗结果
-            If MsgResult = 2 Then
-                '下载
-                RunInUi(
-                Sub()
-                    PageDownloadInstall.VersionWaitingSelect = VersionName
-                    FrmMain.PageChange(FormMain.PageType.Download, FormMain.PageSubType.DownloadInstall)
-                End Sub)
-            End If
-
-        Catch ex As Exception
-            Logger.Error(ex, $"Minecraft 更新提示发送失败（{If(VersionName, "Nothing")}）")
-        End Try
-    End Sub
-
-    ''' <summary>
     ''' 打码字符串中的 AccessToken。
     ''' </summary>
     Public Function FilterAccessToken(Raw As String, FilterChar As Char) As String

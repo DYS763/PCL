@@ -136,7 +136,6 @@ Public Module LocalResourceLoaders
                 '步骤 2：尝试读取工程信息缓存，构建其他 Mod 的对应关系
                 If ModrinthVersion.Count = 0 Then Return
                 Dim ModrinthMapping As New Dictionary(Of String, List(Of LocalResourceFile))
-                Dim ModrinthLoaders As New Dictionary(Of LocalResourceFile, List(Of String))
                 For Each Entry In Mods
                     If Not ModrinthVersion.ContainsKey(Entry.ModrinthHash) Then Continue For
                     If ModrinthVersion(Entry.ModrinthHash)("files")(0)("hashes")("sha1") <> Entry.ModrinthHash Then Continue For
@@ -146,8 +145,6 @@ Public Module LocalResourceLoaders
                     ModrinthMapping(ProjectId).Add(Entry)
                     '记录对应的 ProjectVersion
                     Dim File = ResourceVersion.FromPlatformJson(ModrinthVersion(Entry.ModrinthHash), ResourceTypes.Mod)
-                    ModrinthLoaders(Entry) = ModrinthVersion(Entry.ModrinthHash)("loaders").
-                        Select(Function(l) l.ToString.Lower).Distinct.OrderBy(Function(l) l).ToList
                     If Entry.ProjectVersion Is Nothing OrElse Entry.ProjectVersion.ReleaseDate < File.ReleaseDate Then
                         Entry.ProjectVersion = File
                     Else
@@ -165,34 +162,6 @@ Public Module LocalResourceLoaders
                     For Each Entry In ModrinthMapping(Project.Id)
                         Entry.Project = Project
                     Next
-                Next
-                Logger.Info($"已从 Modrinth 获取本地 Mod 信息，继续获取更新信息")
-                '步骤 4：获取更新信息
-                Dim ModsToUpdate = ModrinthMapping.SelectMany(Function(l) l.Value).ToList
-                If Not ModsToUpdate.Any Then Return
-                Dim UpdateData As String = ModsToUpdate.
-                    Select(Function(m) $"{{""hash"": ""{m.ModrinthHash}"", ""loaders"": [""{ModrinthLoaders(m).Join(""",""")}""], ""game_versions"": [""{VanillaVersion}""]}}").
-                    Join(",")
-                Dim ModrinthUpdate As JObject = DlModRequest("https://api.modrinth.com/v2/version_files/update_individual", HttpMethod.Post,
-                    $"{{""algorithm"": ""sha1"", ""hashes"": [{UpdateData}]}}", "application/json")
-                For Each Entry In Mods
-                    If Not ModrinthUpdate.ContainsKey(Entry.ModrinthHash) OrElse Entry.ProjectVersion Is Nothing Then Continue For
-                    Dim UpdateFile = ResourceVersion.FromPlatformJson(ModrinthUpdate(Entry.ModrinthHash), ResourceTypes.Mod)
-                    If Not UpdateFile.DownloadAvailable Then Continue For
-                    Dim UpdateLoaders = ModrinthUpdate(Entry.ModrinthHash)("loaders").
-                        Select(Function(l) l.ToString.Lower).Distinct.OrderBy(Function(l) l).ToList
-                    If Not UpdateLoaders.SequenceEqual(ModrinthLoaders(Entry)) Then Continue For
-                    Logger.Trace(Function() $"本地文件 {Entry.ProjectVersion.FileName} 在 Modrinth 上的最新版为 {UpdateFile.FileName}")
-                    If Entry.ProjectVersion.ReleaseDate >= UpdateFile.ReleaseDate OrElse Entry.ProjectVersion.Hash = UpdateFile.Hash Then Continue For
-                    '设置更新日志与更新文件
-                    If Entry.UpdateFile IsNot Nothing AndAlso UpdateFile.Hash = Entry.UpdateFile.Hash Then '合并
-                        Entry.ChangelogUrls.Add($"https://modrinth.com/mod/{ModrinthUpdate(Entry.ModrinthHash)("project_id")}/changelog?g={VanillaVersion}")
-                        UpdateFile.DownloadUrls.AddRange(Entry.UpdateFile.DownloadUrls) '合并下载源
-                        Entry.UpdateFile = UpdateFile '优先使用 Modrinth 的文件
-                    ElseIf Entry.UpdateFile Is Nothing OrElse UpdateFile.ReleaseDate >= Entry.UpdateFile.ReleaseDate Then '替换
-                        Entry.ChangelogUrls = New List(Of String) From {$"https://modrinth.com/mod/{ModrinthUpdate(Entry.ModrinthHash)("project_id")}/changelog?g={VanillaVersion}"}
-                        Entry.UpdateFile = UpdateFile
-                    End If
                 Next
                 Logger.Info($"从 Modrinth 获取本地 Mod 信息结束")
             Catch ex As Exception
@@ -219,7 +188,6 @@ Public Module LocalResourceLoaders
 
                 '步骤 2：尝试读取工程信息缓存，构建其他 Mod 的对应关系
                 Dim ProjectIdToLocalFiles As New Dictionary(Of Integer, List(Of LocalResourceFile))
-                Dim CurseForgeLoaders As New Dictionary(Of LocalResourceFile, ModLoaders)
                 For Each Project In CurseForgeRaw
                     Dim ProjectId = Project("id").ToString
                     Dim Hash As UInteger = Project("file")("fileFingerprint")
@@ -229,7 +197,6 @@ Public Module LocalResourceLoaders
                         ProjectIdToLocalFiles.AddIntoValueCollection(ProjectId, Entry)
                         '记录对应的 ProjectVersion
                         Dim File = ResourceVersion.FromPlatformJson(Project("file"), ResourceTypes.Mod)
-                        CurseForgeLoaders(Entry) = File.ModLoaders
                         If Entry.ProjectVersion Is Nothing OrElse Entry.ProjectVersion.ReleaseDate < File.ReleaseDate Then Entry.ProjectVersion = File
                     Next
                 Next
@@ -240,8 +207,6 @@ Public Module LocalResourceLoaders
                 '步骤 3：获取工程信息
                 Dim CurseForgeProject = DlModRequest("https://api.curseforge.com/v1/mods", HttpMethod.Post,
                     $"{{""modIds"": [{ProjectIdToLocalFiles.Keys.Join(",")}]}}", "application/json")("data")
-                Dim UpdateFileIds As New Dictionary(Of Integer, List(Of LocalResourceFile)) 'FileId -> 本地 Mod 文件列表
-                Dim FileIdToProjectSlug As New Dictionary(Of Integer, String)
                 For Each ProjectJson In CurseForgeProject
                     If ProjectJson("isAvailable") IsNot Nothing AndAlso Not ProjectJson("isAvailable").ToObject(Of Boolean) Then Continue For
                     '设置 Entry 中的工程信息
@@ -252,65 +217,10 @@ Public Module LocalResourceLoaders
                         Else
                             LocalFile.Project = Project
                         End If
-                        '查找可能有版本更新的文件列表
-                        Dim LatestFiles = ProjectJson("latestFilesIndexes").Where(
-                        Function(Entry)
-                            'Mod Loader 匹配
-                            Dim EntryLoader As ModLoaders = If(Entry("modLoader") Is Nothing, ModLoaders.None,
-                                Resource.FromCurseForgeModLoaderType(Entry("modLoader").ToObject(Of Integer)))
-                            If CurseForgeLoaders(LocalFile) = ModLoaders.None Then
-                                If EntryLoader <> ModLoaders.None Then Return False
-                            ElseIf Not CurseForgeLoaders(LocalFile).HasFlagF(EntryLoader) Then
-                                Return False
-                            End If
-                            'MC 版本匹配
-                            Dim EntryVersion As String = Entry("gameVersion")
-                            Return EntryVersion IsNot Nothing AndAlso EntryVersion = VanillaVersion
-                        End Function).
-                        MaxByAll(Function(Entry) Entry("gameVersion").ToString, Comparer(Of String).Create(Function(x, y) McUtils.CompareVersion(x, y))) '只保留最新的 MC 版本
-                        For Each Entry In LatestFiles
-                            Dim FileId = Entry("fileId").ToObject(Of Integer)
-                            If Not UpdateFileIds.ContainsKey(FileId) Then UpdateFileIds(FileId) = New List(Of LocalResourceFile)
-                            UpdateFileIds(FileId).Add(LocalFile)
-                            FileIdToProjectSlug(FileId) = Project.Slug
-                        Next
                     Next
                 Next
-                Logger.Info($"已从 CurseForge 获取本地 Mod 信息，需要获取 {UpdateFileIds.Count} 个用于检查更新的文件信息")
-                If Not UpdateFileIds.Any() Then Return
 
-                '步骤 4：获取更新文件信息
-                Dim CurseForgeFiles = DlModRequest("https://api.curseforge.com/v1/mods/files", HttpMethod.Post,
-                                    $"{{""fileIds"": [{UpdateFileIds.Keys.Join(",")}]}}", "application/json")("data")
-                Dim UpdateFiles As New Dictionary(Of LocalResourceFile, ResourceVersion)
-                For Each FileJson In CurseForgeFiles
-                    Dim File = ResourceVersion.FromPlatformJson(FileJson, ResourceTypes.Mod)
-                    If Not File.DownloadAvailable Then Continue For
-                    For Each Entry As LocalResourceFile In UpdateFileIds(File.Id)
-                        If File.ModLoaders <> CurseForgeLoaders(Entry) Then
-                            Logger.Warn($"从 CurseForge 获取到的更新文件 {File.FileName} 加载器为 {File.ModLoaders}，与本地文件 {Entry.File.Name} 的加载器 {CurseForgeLoaders(Entry)} 不一致，已忽略", LogBehavior.None)
-                            Continue For
-                        End If
-                        If UpdateFiles.ContainsKey(Entry) AndAlso UpdateFiles(Entry).ReleaseDate >= File.ReleaseDate Then Continue For
-                        UpdateFiles(Entry) = File
-                    Next
-                Next
-                For Each Pair In UpdateFiles
-                    Dim Entry As LocalResourceFile = Pair.Key
-                    Dim UpdateFile As ResourceVersion = Pair.Value
-                    Logger.Trace(Function() $"本地文件 {Entry.ProjectVersion.FileName} 在 CurseForge 上的最新版为 {UpdateFile.FileName}")
-                    If Entry.ProjectVersion.ReleaseDate >= UpdateFile.ReleaseDate OrElse Entry.ProjectVersion.Hash = UpdateFile.Hash Then Continue For
-                    '设置更新日志与更新文件
-                    If Entry.UpdateFile IsNot Nothing AndAlso UpdateFile.Hash = Entry.UpdateFile.Hash Then '合并
-                        Entry.ChangelogUrls.Add($"https://www.curseforge.com/minecraft/mc-mods/{FileIdToProjectSlug(UpdateFile.Id)}/files/{UpdateFile.Id}")
-                        Entry.UpdateFile.DownloadUrls.AddRange(UpdateFile.DownloadUrls) '合并下载源
-                    ElseIf Entry.UpdateFile Is Nothing OrElse UpdateFile.ReleaseDate > Entry.UpdateFile.ReleaseDate Then '替换
-                        Entry.ChangelogUrls = New List(Of String) From {$"https://www.curseforge.com/minecraft/mc-mods/{FileIdToProjectSlug(UpdateFile.Id)}/files/{UpdateFile.Id}"}
-                        Entry.UpdateFile = UpdateFile
-                    End If
-                Next
-
-                Logger.Info($"从 CurseForge 获取 Mod 更新信息结束")
+                Logger.Info($"从 CurseForge 获取本地 Mod 信息结束")
             Catch ex As Exception
                 Logger.Warn(ex, "从 CurseForge 获取本地 Mod 信息失败")
                 IsFailed = True

@@ -170,7 +170,6 @@ Public Class LocalResourceFile
         If Json.ContainsKey("Project") Then Project = New ResourceProject(Json("Project"))
         If Json.ContainsKey("ChangelogUrls") Then ChangelogUrls = Json("ChangelogUrls").ToObject(Of List(Of String))
         If Json.ContainsKey("Version") Then ProjectVersion = ResourceVersion.FromCacheJson(Json("Version"))
-        If Json.ContainsKey("UpdateFile") Then UpdateFile = ResourceVersion.FromCacheJson(Json("UpdateFile"))
     End Sub
 
     ''' <summary>
